@@ -454,21 +454,40 @@ bot.onText(/\/pm_positions/, async (msg) => {
   }
 
   try {
-    const positions = await getPolymarketPositions(user.encryptedPrivateKey);
+    bot.sendMessage(chatId, 'Fetching positions...');
+    const data = await getPolymarketPositions(user.encryptedPrivateKey);
 
-    if (positions.openOrders.length === 0) {
-      bot.sendMessage(chatId, 'No open orders on Polymarket.');
+    let message = '';
+
+    // Show token positions (filled orders / holdings)
+    if (data.positions.length > 0) {
+      message += '*Your Positions:*\n\n';
+      for (const p of data.positions) {
+        const pnlSign = p.cashPnl >= 0 ? '+' : '';
+        const pnlPctSign = p.percentPnl >= 0 ? '+' : '';
+        message += `${p.title.slice(0, 40)}${p.title.length > 40 ? '...' : ''}\n` +
+          `  ${p.outcome}: ${p.size.toFixed(2)} shares @ $${p.avgPrice.toFixed(3)}\n` +
+          `  Value: $${p.currentValue.toFixed(2)} | PnL: ${pnlSign}$${p.cashPnl.toFixed(2)} (${pnlPctSign}${p.percentPnl.toFixed(1)}%)\n\n`;
+      }
+    }
+
+    // Show open orders (limit orders waiting to fill)
+    if (data.openOrders.length > 0) {
+      message += '*Open Orders:*\n\n';
+      for (const o of data.openOrders) {
+        message += `${o.side} ${o.outcome}\n` +
+          `  Price: ${parseFloat(o.price).toFixed(2)}\n` +
+          `  Size: ${o.size}\n` +
+          `  Market: ${o.market.slice(0, 16)}...\n\n`;
+      }
+    }
+
+    if (!message) {
+      bot.sendMessage(chatId, 'No positions or open orders on Polymarket.');
       return;
     }
 
-    const ordersText = positions.openOrders.map((o) => {
-      return `${o.side} ${o.outcome}\n` +
-        `  Price: ${parseFloat(o.price).toFixed(2)}\n` +
-        `  Size: ${o.size}\n` +
-        `  Market: ${o.market.slice(0, 16)}...`;
-    }).join('\n\n');
-
-    bot.sendMessage(chatId, `Open Polymarket Orders:\n\n${ordersText}`);
+    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
   } catch (error) {
     bot.sendMessage(chatId, `Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
@@ -539,7 +558,20 @@ bot.onText(/\/pm_buy\s+(\S+)\s+(YES|NO|yes|no)\s+([\d.]+)/, async (msg, match) =
     const result = await placePolymarketOrder(user.encryptedPrivateKey, tokenId, 'BUY', amount);
 
     if (result.success) {
-      bot.sendMessage(chatId, `Order placed!\nOrder ID: ${result.orderId}`);
+      const shares = parseFloat(result.sharesReceived || '0').toFixed(4);
+      const spent = parseFloat(result.usdcSpent || '0').toFixed(2);
+      const price = result.avgPrice ? `$${result.avgPrice}` : 'market';
+
+      let message = `Order Filled!\n\n` +
+        `Bought: ${shares} ${outcome} shares\n` +
+        `Cost: $${spent} USDC.e\n` +
+        `Avg Price: ${price}`;
+
+      if (result.txHash) {
+        message += `\n\nTx: https://polygonscan.com/tx/${result.txHash}`;
+      }
+
+      bot.sendMessage(chatId, message);
     } else {
       bot.sendMessage(chatId, `Order failed: ${result.error}`);
     }
@@ -593,7 +625,20 @@ bot.onText(/\/pm_sell\s+(\S+)\s+(YES|NO|yes|no)\s+([\d.]+)/, async (msg, match) 
     const result = await placePolymarketOrder(user.encryptedPrivateKey, tokenId, 'SELL', shares);
 
     if (result.success) {
-      bot.sendMessage(chatId, `Order placed!\nOrder ID: ${result.orderId}`);
+      const sold = parseFloat(result.sharesSold || '0').toFixed(4);
+      const received = parseFloat(result.usdcReceived || '0').toFixed(2);
+      const price = result.avgPrice ? `$${result.avgPrice}` : 'market';
+
+      let message = `Order Filled!\n\n` +
+        `Sold: ${sold} ${outcome} shares\n` +
+        `Received: $${received} USDC.e\n` +
+        `Avg Price: ${price}`;
+
+      if (result.txHash) {
+        message += `\n\nTx: https://polygonscan.com/tx/${result.txHash}`;
+      }
+
+      bot.sendMessage(chatId, message);
     } else {
       bot.sendMessage(chatId, `Order failed: ${result.error}`);
     }
@@ -622,7 +667,7 @@ bot.onText(/\/help/, (msg) => {
     `/pm_markets [query] - List/search markets\n` +
     `/pm_balance - Check Polygon USDC balance\n` +
     `/pm_swap <amt> - Swap USDC to USDC.e\n` +
-    `/pm_positions - View open orders\n` +
+    `/pm_positions - View positions & orders\n` +
     `/pm_buy <id> YES|NO <$> - Buy shares\n` +
     `/pm_sell <id> YES|NO <qty> - Sell shares\n\n` +
     `/help - Show this help message`,

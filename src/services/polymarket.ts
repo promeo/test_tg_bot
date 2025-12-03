@@ -344,8 +344,21 @@ export async function ensurePolymarketApprovals(encryptedPrivateKey: string): Pr
   }
 }
 
-// Get user's positions (open orders and trades)
+// Position data from Polymarket Data API
+export interface PolymarketPosition {
+  conditionId: string;
+  title: string;
+  outcome: string;
+  size: number; // Number of shares
+  avgPrice: number; // Average entry price
+  currentValue: number; // Current value in USDC
+  cashPnl: number; // Profit/Loss in USDC
+  percentPnl: number; // Profit/Loss percentage
+}
+
+// Get user's positions from Polymarket Data API
 export async function getPolymarketPositions(encryptedPrivateKey: string): Promise<{
+  positions: PolymarketPosition[];
   openOrders: Array<{
     id: string;
     market: string;
@@ -355,10 +368,35 @@ export async function getPolymarketPositions(encryptedPrivateKey: string): Promi
     outcome: string;
   }>;
 }> {
+  const wallet = getWallet(encryptedPrivateKey);
+  const address = wallet.address;
+
+  // Fetch positions from Data API
+  const response = await fetch(
+    `https://data-api.polymarket.com/positions?user=${address}&sizeThreshold=0.01`
+  );
+
+  let positions: PolymarketPosition[] = [];
+  if (response.ok) {
+    const data = (await response.json()) as any[];
+    positions = data.map((p) => ({
+      conditionId: p.conditionId,
+      title: p.title || 'Unknown Market',
+      outcome: p.outcome || 'Unknown',
+      size: p.size || 0,
+      avgPrice: p.avgPrice || 0,
+      currentValue: p.currentValue || 0,
+      cashPnl: p.cashPnl || 0,
+      percentPnl: p.percentPnl || 0,
+    }));
+  }
+
+  // Also get open orders from CLOB
   const client = await getClobClient(encryptedPrivateKey);
   const orders = await client.getOpenOrders();
 
   return {
+    positions,
     openOrders: orders.map((o) => ({
       id: o.id,
       market: o.market,
@@ -370,7 +408,7 @@ export async function getPolymarketPositions(encryptedPrivateKey: string): Promi
   };
 }
 
-// Place a market order on Polymarket
+// Place a FOK (Fill or Kill) market order on Polymarket
 export async function placePolymarketOrder(
   encryptedPrivateKey: string,
   tokenId: string,
@@ -379,11 +417,17 @@ export async function placePolymarketOrder(
 ): Promise<{
   success: boolean;
   orderId?: string;
+  sharesReceived?: string; // For BUY: shares received
+  usdcSpent?: string; // For BUY: USDC spent
+  usdcReceived?: string; // For SELL: USDC received
+  sharesSold?: string; // For SELL: shares sold
+  avgPrice?: string; // Average fill price
+  txHash?: string; // Transaction hash
   approvalTxHash?: string;
   error?: string;
 }> {
   try {
-    console.log(`Placing Polymarket order: ${side} ${amount} for token ${tokenId}`);
+    console.log(`Placing FOK Polymarket order: ${side} ${amount} for token ${tokenId}`);
 
     // Ensure USDC.e is approved for Polymarket before buying
     if (side === 'BUY') {
@@ -401,25 +445,59 @@ export async function placePolymarketOrder(
     }
 
     const client = await getClobClient(encryptedPrivateKey);
-    console.log('Got CLOB client, creating market order...');
+    console.log('Got CLOB client, placing FOK market order...');
 
+    // Round amount to 2 decimal places
+    const roundedAmount = Math.floor(amount * 100) / 100;
+
+    console.log(`Creating FOK market order: ${side} $${roundedAmount} at market price`);
+
+    // Use FOK (Fill or Kill) market order - no price means fill at best available market price
+    // FOK ensures the entire order fills immediately or fails entirely (no partial fills)
     const result = await client.createAndPostMarketOrder(
       {
         tokenID: tokenId,
-        amount: amount,
+        amount: roundedAmount,
         side: side === 'BUY' ? Side.BUY : Side.SELL,
+        feeRateBps: 0,
       },
-      undefined,
-      OrderType.FOK // Fill or Kill for market-like behavior
+      { tickSize: '0.01', negRisk: false },
+      OrderType.FOK
     );
 
     console.log('Order result:', JSON.stringify(result, null, 2));
 
     if (result.success) {
-      return {
-        success: true,
-        orderId: result.orderID,
-      };
+      // Calculate average price from makingAmount / takingAmount
+      // For BUY: makingAmount = USDC spent, takingAmount = shares received
+      // For SELL: makingAmount = shares sold, takingAmount = USDC received
+      const makingAmt = parseFloat(result.makingAmount || '0');
+      const takingAmt = parseFloat(result.takingAmount || '0');
+      const avgPrice = side === 'BUY' && takingAmt > 0
+        ? (makingAmt / takingAmt).toFixed(4)
+        : takingAmt > 0 ? (takingAmt / makingAmt).toFixed(4) : undefined;
+
+      const txHash = result.transactionsHashes?.[0];
+
+      if (side === 'BUY') {
+        return {
+          success: true,
+          orderId: result.orderID,
+          sharesReceived: result.takingAmount,
+          usdcSpent: result.makingAmount,
+          avgPrice,
+          txHash,
+        };
+      } else {
+        return {
+          success: true,
+          orderId: result.orderID,
+          sharesSold: result.makingAmount,
+          usdcReceived: result.takingAmount,
+          avgPrice,
+          txHash,
+        };
+      }
     } else {
       return {
         success: false,
