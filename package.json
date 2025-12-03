@@ -1,16 +1,25 @@
 {
   "name": "test_tg_bot",
   "version": "1.0.0",
-  "description": "Basic Telegram bot for testing with ngrok",
-  "main": "src/bot.js",
+  "description": "Telegram bot for HyperLiquid trading (testnet)",
+  "main": "dist/bot.js",
   "scripts": {
-    "start": "node src/bot.js",
-    "dev": "node --watch src/bot.js"
+    "build": "tsc",
+    "start": "node dist/bot.js",
+    "dev": "tsc && node dist/bot.js",
+    "watch": "tsc -w"
   },
-  "keywords": ["telegram", "bot"],
+  "keywords": ["telegram", "bot", "hyperliquid", "trading"],
   "license": "ISC",
   "dependencies": {
+    "@nktkas/hyperliquid": "^0.27.0",
     "dotenv": "^16.3.1",
-    "node-telegram-bot-api": "^0.64.0"
+    "node-telegram-bot-api": "^0.64.0",
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/node-telegram-bot-api": "^0.64.0",
+    "typescript": "^5.3.0"
   }
 }
