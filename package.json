@@ -9,11 +9,18 @@
     "dev": "tsc && node dist/bot.js",
     "watch": "tsc -w"
   },
-  "keywords": ["telegram", "bot", "hyperliquid", "trading"],
+  "keywords": [
+    "telegram",
+    "bot",
+    "hyperliquid",
+    "trading"
+  ],
   "license": "ISC",
   "dependencies": {
     "@nktkas/hyperliquid": "^0.27.0",
+    "@polymarket/clob-client": "^5.0.0",
     "dotenv": "^16.3.1",
+    "ethers": "^5.8.0",
     "node-telegram-bot-api": "^0.64.0",
     "viem": "^2.21.0"
   },

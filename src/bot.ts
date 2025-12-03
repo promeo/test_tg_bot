@@ -3,6 +3,15 @@ import { config, validateConfig } from './config';
 import { generateWallet, encryptPrivateKey } from './services/wallet';
 import { getUser, saveUser, userExists } from './services/database';
 import { getBalance, getPositions, placeMarketOrder, getAvailableCoins } from './services/hyperliquid';
+import {
+  getTrendingMarkets,
+  getMarket,
+  searchMarkets,
+  getPolygonBalances,
+  getPolymarketPositions,
+  placePolymarketOrder,
+  swapUsdcToUsdce,
+} from './services/polymarket';
 
 // Validate configuration
 validateConfig();
@@ -276,23 +285,331 @@ bot.onText(/\/coins/, async (msg) => {
   }
 });
 
+// ==================== POLYMARKET COMMANDS ====================
+
+// /pm_markets command - List trending prediction markets
+bot.onText(/\/pm_markets(?:\s+(.+))?/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const query = match?.[1]?.trim();
+
+  try {
+    bot.sendMessage(chatId, query ? `Searching for "${query}"...` : 'Fetching trending markets...');
+
+    const markets = query ? await searchMarkets(query, 5) : await getTrendingMarkets(5);
+
+    if (markets.length === 0) {
+      bot.sendMessage(chatId, 'No markets found.');
+      return;
+    }
+
+    const marketText = markets.map((m, i) => {
+      const yesPrice = parseFloat(m.outcomePrices[0] || '0') * 100;
+      const noPrice = parseFloat(m.outcomePrices[1] || '0') * 100;
+      const volume = parseFloat(m.volume) / 1000000;
+      return `${i + 1}. ${m.question}\n` +
+        `   YES: ${yesPrice.toFixed(0)}% | NO: ${noPrice.toFixed(0)}%\n` +
+        `   Vol: $${volume.toFixed(1)}M\n` +
+        `   ID: \`${m.conditionId.slice(0, 16)}...\``;
+    }).join('\n\n');
+
+    bot.sendMessage(
+      chatId,
+      `*Polymarket ${query ? 'Search Results' : 'Trending'}*\n\n${marketText}\n\n` +
+      `Use /pm_buy <id> YES|NO <amount> to trade`,
+      { parse_mode: 'Markdown' }
+    );
+  } catch (error) {
+    bot.sendMessage(chatId, `Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+});
+
+// /pm_balance command - Show Polymarket (Polygon) USDC balance
+bot.onText(/\/pm_balance/, async (msg) => {
+  const chatId = msg.chat.id;
+  const telegramId = msg.from?.id;
+
+  if (!telegramId) return;
+
+  const user = getUser(telegramId);
+  if (!user) {
+    bot.sendMessage(chatId, 'No wallet found. Use /start to create one.');
+    return;
+  }
+
+  try {
+    bot.sendMessage(chatId, 'Fetching Polygon balances...');
+    const balances = await getPolygonBalances(user.encryptedPrivateKey);
+
+    const pol = parseFloat(balances.pol) || 0;
+    const usdcNative = parseFloat(balances.usdcNative) || 0;
+    const usdcBridged = parseFloat(balances.usdcBridged) || 0;
+
+    let message = `*Polygon Wallet Balances*\n\n` +
+      `POL (gas): ${pol.toFixed(4)}\n` +
+      `USDC.e: $${usdcBridged.toFixed(2)} (Polymarket)\n` +
+      `USDC (native): $${usdcNative.toFixed(2)}\n\n`;
+
+    // Show warning if they have native USDC but no USDC.e
+    if (usdcNative > 0 && usdcBridged === 0) {
+      message += `⚠️ *Action Required:*\n` +
+        `Polymarket uses USDC.e (bridged), not native USDC.\n` +
+        `Swap your USDC to USDC.e on:\n` +
+        `• QuickSwap: quickswap.exchange\n` +
+        `• 1inch: app.1inch.io\n\n`;
+    }
+
+    message += `Your address:\n\`${balances.address}\``;
+
+    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+  } catch (error) {
+    bot.sendMessage(chatId, `Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+});
+
+// /pm_swap command - Swap native USDC to USDC.e for Polymarket
+bot.onText(/\/pm_swap(?:\s+([\d.]+))?/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const telegramId = msg.from?.id;
+
+  if (!telegramId) return;
+
+  const user = getUser(telegramId);
+  if (!user) {
+    bot.sendMessage(chatId, 'No wallet found. Use /start to create one.');
+    return;
+  }
+
+  const amountStr = match?.[1];
+  if (!amountStr) {
+    // No amount provided - show balance and usage
+    try {
+      const balances = await getPolygonBalances(user.encryptedPrivateKey);
+      const usdcNative = parseFloat(balances.usdcNative) || 0;
+      bot.sendMessage(
+        chatId,
+        `Usage: /pm_swap <amount>\n\n` +
+        `Example: /pm_swap 10 (swaps 10 USDC to USDC.e)\n\n` +
+        `Your native USDC balance: $${usdcNative.toFixed(2)}`
+      );
+    } catch {
+      bot.sendMessage(chatId, `Usage: /pm_swap <amount>\n\nExample: /pm_swap 10`);
+    }
+    return;
+  }
+
+  const amount = parseFloat(amountStr);
+  if (isNaN(amount) || amount <= 0) {
+    bot.sendMessage(chatId, 'Invalid amount. Usage: /pm_swap 10');
+    return;
+  }
+
+  try {
+    // Check balance
+    const balances = await getPolygonBalances(user.encryptedPrivateKey);
+    const usdcNative = parseFloat(balances.usdcNative) || 0;
+
+    if (usdcNative === 0) {
+      bot.sendMessage(chatId, 'No native USDC to swap. Send USDC to your wallet first.');
+      return;
+    }
+
+    if (amount > usdcNative) {
+      bot.sendMessage(chatId, `Insufficient balance. You have $${usdcNative.toFixed(2)} native USDC.`);
+      return;
+    }
+
+    bot.sendMessage(chatId, `Swapping $${amount.toFixed(2)} USDC to USDC.e...`);
+
+    // Progress callback to update user
+    const onProgress = (message: string) => {
+      bot.sendMessage(chatId, message);
+    };
+
+    const result = await swapUsdcToUsdce(user.encryptedPrivateKey, amount, onProgress);
+
+    if (result.success) {
+      bot.sendMessage(
+        chatId,
+        `Swap Complete!\n\n` +
+        `Swapped: $${result.amountIn} USDC\n` +
+        `Received: $${result.amountOut} USDC.e\n\n` +
+        `Tx: https://polygonscan.com/tx/${result.txHash}\n\n` +
+        `Use /pm_balance to check your new balance.`
+      );
+    } else {
+      bot.sendMessage(chatId, `Swap failed: ${result.error}`);
+    }
+  } catch (error) {
+    bot.sendMessage(chatId, `Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+});
+
+// /pm_positions command - Show Polymarket positions/orders
+bot.onText(/\/pm_positions/, async (msg) => {
+  const chatId = msg.chat.id;
+  const telegramId = msg.from?.id;
+
+  if (!telegramId) return;
+
+  const user = getUser(telegramId);
+  if (!user) {
+    bot.sendMessage(chatId, 'No wallet found. Use /start to create one.');
+    return;
+  }
+
+  try {
+    const positions = await getPolymarketPositions(user.encryptedPrivateKey);
+
+    if (positions.openOrders.length === 0) {
+      bot.sendMessage(chatId, 'No open orders on Polymarket.');
+      return;
+    }
+
+    const ordersText = positions.openOrders.map((o) => {
+      return `${o.side} ${o.outcome}\n` +
+        `  Price: ${parseFloat(o.price).toFixed(2)}\n` +
+        `  Size: ${o.size}\n` +
+        `  Market: ${o.market.slice(0, 16)}...`;
+    }).join('\n\n');
+
+    bot.sendMessage(chatId, `*Open Polymarket Orders:*\n\n${ordersText}`, { parse_mode: 'Markdown' });
+  } catch (error) {
+    bot.sendMessage(chatId, `Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+});
+
+// /pm_buy command - Buy YES/NO shares on Polymarket
+bot.onText(/\/pm_buy\s+(\S+)\s+(YES|NO|yes|no)\s+([\d.]+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const telegramId = msg.from?.id;
+
+  if (!telegramId || !match) return;
+
+  const user = getUser(telegramId);
+  if (!user) {
+    bot.sendMessage(chatId, 'No wallet found. Use /start to create one.');
+    return;
+  }
+
+  const conditionId = match[1];
+  const outcome = match[2].toUpperCase();
+  const amount = parseFloat(match[3]);
+
+  if (isNaN(amount) || amount <= 0) {
+    bot.sendMessage(chatId, 'Invalid amount. Usage: /pm_buy <market_id> YES 10');
+    return;
+  }
+
+  try {
+    bot.sendMessage(chatId, `Looking up market...`);
+
+    // Get market to find token ID
+    const market = await getMarket(conditionId);
+    if (!market) {
+      bot.sendMessage(chatId, 'Market not found. Use /pm_markets to find valid market IDs.');
+      return;
+    }
+
+    const tokenIndex = outcome === 'YES' ? 0 : 1;
+    const tokenId = market.clobTokenIds[tokenIndex];
+
+    if (!tokenId) {
+      bot.sendMessage(chatId, 'Token ID not found for this market.');
+      return;
+    }
+
+    bot.sendMessage(chatId, `Placing BUY order for $${amount} ${outcome} on:\n"${market.question}"...`);
+
+    const result = await placePolymarketOrder(user.encryptedPrivateKey, tokenId, 'BUY', amount);
+
+    if (result.success) {
+      bot.sendMessage(chatId, `Order placed!\nOrder ID: ${result.orderId}`);
+    } else {
+      bot.sendMessage(chatId, `Order failed: ${result.error}`);
+    }
+  } catch (error) {
+    bot.sendMessage(chatId, `Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+});
+
+// /pm_sell command - Sell YES/NO shares on Polymarket
+bot.onText(/\/pm_sell\s+(\S+)\s+(YES|NO|yes|no)\s+([\d.]+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const telegramId = msg.from?.id;
+
+  if (!telegramId || !match) return;
+
+  const user = getUser(telegramId);
+  if (!user) {
+    bot.sendMessage(chatId, 'No wallet found. Use /start to create one.');
+    return;
+  }
+
+  const conditionId = match[1];
+  const outcome = match[2].toUpperCase();
+  const shares = parseFloat(match[3]);
+
+  if (isNaN(shares) || shares <= 0) {
+    bot.sendMessage(chatId, 'Invalid shares. Usage: /pm_sell <market_id> YES 10');
+    return;
+  }
+
+  try {
+    bot.sendMessage(chatId, `Looking up market...`);
+
+    const market = await getMarket(conditionId);
+    if (!market) {
+      bot.sendMessage(chatId, 'Market not found. Use /pm_markets to find valid market IDs.');
+      return;
+    }
+
+    const tokenIndex = outcome === 'YES' ? 0 : 1;
+    const tokenId = market.clobTokenIds[tokenIndex];
+
+    if (!tokenId) {
+      bot.sendMessage(chatId, 'Token ID not found for this market.');
+      return;
+    }
+
+    bot.sendMessage(chatId, `Placing SELL order for ${shares} ${outcome} shares on:\n"${market.question}"...`);
+
+    const result = await placePolymarketOrder(user.encryptedPrivateKey, tokenId, 'SELL', shares);
+
+    if (result.success) {
+      bot.sendMessage(chatId, `Order placed!\nOrder ID: ${result.orderId}`);
+    } else {
+      bot.sendMessage(chatId, `Order failed: ${result.error}`);
+    }
+  } catch (error) {
+    bot.sendMessage(chatId, `Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+});
+
 // /help command - Show available commands
 bot.onText(/\/help/, (msg) => {
   const chatId = msg.chat.id;
 
   bot.sendMessage(
     chatId,
-    `HyperLiquid Trading Bot ${config.isTestnet ? '(TESTNET)' : ''}\n\n` +
-    `Commands:\n` +
+    `*Trading Bot*\n\n` +
+    `*HyperLiquid ${config.isTestnet ? '(TESTNET)' : ''}:*\n` +
     `/start - Create or show wallet\n` +
     `/wallet - Show your wallet address\n` +
     `/deposit - Funding instructions\n` +
-    `/balance - Check account balance\n` +
-    `/positions - View open positions\n` +
+    `/balance - Check HL account balance\n` +
+    `/positions - View HL open positions\n` +
     `/buy <coin> <size> - Market buy (e.g., /buy ETH 0.01)\n` +
     `/sell <coin> <size> - Market sell (e.g., /sell ETH 0.01)\n` +
-    `/coins - List available pairs\n` +
-    `/help - Show this help message`
+    `/coins - List available pairs\n\n` +
+    `*Polymarket (Polygon Mainnet):*\n` +
+    `/pm_markets [query] - List/search markets\n` +
+    `/pm_balance - Check Polygon USDC balance\n` +
+    `/pm_swap <amt> - Swap USDC to USDC.e\n` +
+    `/pm_positions - View open orders\n` +
+    `/pm_buy <id> YES|NO <$> - Buy shares\n` +
+    `/pm_sell <id> YES|NO <qty> - Sell shares\n\n` +
+    `/help - Show this help message`,
+    { parse_mode: 'Markdown' }
   );
 });
 
