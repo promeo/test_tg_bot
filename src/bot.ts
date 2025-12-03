@@ -121,11 +121,20 @@ bot.onText(/\/balance/, async (msg) => {
 
   try {
     const balance = await getBalance(user.address);
+
+    // Format spot balances
+    const spotText = balance.spotBalances.length > 0
+      ? balance.spotBalances.map(b => `  ${b.coin}: ${parseFloat(b.total).toFixed(2)}`).join('\n')
+      : '  (empty)';
+
     bot.sendMessage(
       chatId,
       `Account Balance:\n\n` +
-      `Total Value: $${parseFloat(balance.accountValue).toFixed(2)}\n` +
-      `Withdrawable: $${parseFloat(balance.withdrawable).toFixed(2)}`,
+      `*Perps Account:*\n` +
+      `  Value: $${parseFloat(balance.perpsValue).toFixed(2)}\n` +
+      `  Withdrawable: $${parseFloat(balance.perpsWithdrawable).toFixed(2)}\n\n` +
+      `*Spot Account:*\n${spotText}\n\n` +
+      `_To trade perps, transfer USDC from Spot to Perps on HL web app._`,
       { parse_mode: 'Markdown' }
     );
   } catch (error) {

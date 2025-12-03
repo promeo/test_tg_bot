@@ -15,15 +15,25 @@ export function getExchangeClient(encryptedPrivateKey: string): hl.ExchangeClien
   return new hl.ExchangeClient({ wallet: account, transport });
 }
 
-// Fetch user's account balance
+// Fetch user's account balance (both perps and spot)
 export async function getBalance(userAddress: string): Promise<{
-  accountValue: string;
-  withdrawable: string;
+  perpsValue: string;
+  perpsWithdrawable: string;
+  spotBalances: Array<{ coin: string; total: string; hold: string }>;
 }> {
-  const state = await infoClient.clearinghouseState({ user: userAddress as `0x${string}` });
+  const [perpsState, spotState] = await Promise.all([
+    infoClient.clearinghouseState({ user: userAddress as `0x${string}` }),
+    infoClient.spotClearinghouseState({ user: userAddress as `0x${string}` }),
+  ]);
+
   return {
-    accountValue: state.marginSummary.accountValue,
-    withdrawable: state.withdrawable,
+    perpsValue: perpsState.marginSummary.accountValue,
+    perpsWithdrawable: perpsState.withdrawable,
+    spotBalances: spotState.balances.map((b: any) => ({
+      coin: b.coin,
+      total: b.total,
+      hold: b.hold,
+    })),
   };
 }
 
@@ -64,16 +74,23 @@ export async function placeMarketOrder(
     }
     const midPrice = (parseFloat(l2Book.levels[0][0].px) + parseFloat(l2Book.levels[1][0].px)) / 2;
 
-    // Add 1% slippage for market orders
-    const slippageMultiplier = isBuy ? 1.01 : 0.99;
-    const limitPrice = midPrice * slippageMultiplier;
-
     // Get asset metadata for proper rounding
     const meta = await infoClient.meta();
     const assetInfo = meta.universe.find((a) => a.name === coin);
     if (!assetInfo) {
       return { success: false, error: `Unknown asset: ${coin}` };
     }
+
+    // For market orders, use the best available price with some slippage
+    // Buy: use ask price + slippage, Sell: use bid price - slippage
+    const bestAsk = parseFloat(l2Book.levels[1][0].px);
+    const bestBid = parseFloat(l2Book.levels[0][0].px);
+    const slippageMultiplier = isBuy ? 1.005 : 0.995; // 0.5% slippage
+    const rawPrice = isBuy ? bestAsk * slippageMultiplier : bestBid * slippageMultiplier;
+
+    // Round price to 1 decimal (tick size for most assets)
+    // HyperLiquid requires prices to be rounded to tick size
+    const limitPrice = Math.round(rawPrice * 10) / 10;
 
     // Round size to proper decimals
     const szDecimals = assetInfo.szDecimals;
@@ -83,7 +100,7 @@ export async function placeMarketOrder(
       orders: [{
         a: meta.universe.findIndex((a) => a.name === coin), // asset index
         b: isBuy,
-        p: limitPrice.toFixed(6),
+        p: limitPrice.toString(),
         s: roundedSize.toFixed(szDecimals),
         r: false, // reduce only
         t: { limit: { tif: 'Ioc' } }, // Immediate or Cancel for market-like behavior
