@@ -9,6 +9,11 @@ import { decryptPrivateKey } from './wallet';
 const USDC_NATIVE = '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359'; // Native USDC (Circle)
 const USDC_BRIDGED = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'; // USDC.e (bridged from Ethereum) - Polymarket uses this
 
+// Polymarket contract addresses on Polygon
+const POLYMARKET_CTF_EXCHANGE = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E'; // CLOB Exchange
+const POLYMARKET_NEG_RISK_CTF_EXCHANGE = '0xC5d563A36AE78145C45a50134d48A1215220f80a'; // Neg Risk Exchange
+const POLYMARKET_CTF = '0x4D97DCd97eC945f40cF65F87097ACe5EA0476045'; // Conditional Token Framework
+
 const ERC20_ABI = [
   'function balanceOf(address) view returns (uint256)',
   'function decimals() view returns (uint8)',
@@ -92,46 +97,114 @@ export interface GammaMarket {
   closed: boolean;
 }
 
-// Fetch trending markets from Gamma API
-export async function getTrendingMarkets(limit: number = 10): Promise<GammaMarket[]> {
-  const response = await fetch(
-    `${config.pmGammaUrl}/markets?closed=false&active=true&limit=${limit}&order=volume&ascending=false`
-  );
-
-  if (!response.ok) {
-    throw new Error(`Failed to fetch markets: ${response.statusText}`);
-  }
-
-  const markets = (await response.json()) as any[];
-  return markets.map((m: any) => ({
-    id: m.id,
-    question: m.question,
-    conditionId: m.conditionId,
-    slug: m.slug,
-    outcomes: m.outcomes ? JSON.parse(m.outcomes) : ['Yes', 'No'],
-    outcomePrices: m.outcomePrices ? JSON.parse(m.outcomePrices) : ['0.5', '0.5'],
-    volume: m.volume || '0',
-    liquidity: m.liquidity || '0',
-    clobTokenIds: m.clobTokenIds ? JSON.parse(m.clobTokenIds) : [],
-    active: m.active,
-    closed: m.closed,
-  }));
+// CLOB Market type
+interface ClobMarket {
+  condition_id: string;
+  question_id: string;
+  tokens: Array<{
+    token_id: string;
+    outcome: string;
+    price: string;
+  }>;
+  minimum_order_size: string;
+  minimum_tick_size: string;
+  description: string;
+  category: string;
+  end_date_iso: string;
+  game_start_time: string;
+  question: string;
+  market_slug: string;
+  active: boolean;
+  closed: boolean;
+  accepting_orders: boolean;
 }
 
-// Get specific market by condition ID
+// Fetch markets from Gamma API with pagination until we get enough tradeable ones
+export async function getTrendingMarkets(limit: number = 10): Promise<GammaMarket[]> {
+  const tradeableMarkets: GammaMarket[] = [];
+  let offset = 0;
+  const batchSize = 50; // Fetch in batches
+  const maxIterations = 10; // Prevent infinite loops
+
+  for (let i = 0; i < maxIterations && tradeableMarkets.length < limit; i++) {
+    const response = await fetch(
+      `${config.pmGammaUrl}/markets?closed=false&active=true&order=volume&ascending=false&limit=${batchSize}&offset=${offset}`
+    );
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch markets: ${response.statusText}`);
+    }
+
+    const markets = (await response.json()) as any[];
+
+    if (markets.length === 0) {
+      break; // No more markets
+    }
+
+    // Filter for markets with order book enabled
+    for (const m of markets) {
+      if (!m.enableOrderBook) continue;
+      if (m.closed) continue;
+
+      const market: GammaMarket = {
+        id: m.id,
+        question: m.question,
+        conditionId: m.conditionId,
+        slug: m.slug,
+        outcomes: m.outcomes ? JSON.parse(m.outcomes) : ['Yes', 'No'],
+        outcomePrices: m.outcomePrices ? JSON.parse(m.outcomePrices) : ['0.5', '0.5'],
+        volume: m.volume || '0',
+        liquidity: m.liquidity || '0',
+        clobTokenIds: m.clobTokenIds ? JSON.parse(m.clobTokenIds) : [],
+        active: m.active,
+        closed: m.closed,
+      };
+
+      if (market.clobTokenIds.length >= 2) {
+        tradeableMarkets.push(market);
+        if (tradeableMarkets.length >= limit) break;
+      }
+    }
+
+    offset += batchSize;
+  }
+
+  console.log(`Found ${tradeableMarkets.length} tradeable markets with order books`);
+  return tradeableMarkets;
+}
+
+// Get specific market by condition ID from Gamma API
 export async function getMarket(conditionId: string): Promise<GammaMarket | null> {
-  const response = await fetch(
-    `${config.pmGammaUrl}/markets?condition_id=${conditionId}`
-  );
+  // Gamma API's conditionId filter is broken (returns partial matches)
+  // Search with same params as getTrendingMarkets and find exact match
+  const response = await fetch(`${config.pmGammaUrl}/markets?closed=false&active=true&order=volume&ascending=false&limit=200`);
 
   if (!response.ok) {
+    console.log(`Failed to fetch markets from Gamma`);
     return null;
   }
 
   const markets = (await response.json()) as any[];
-  if (markets.length === 0) return null;
 
-  const m = markets[0];
+  // Find exact conditionId match
+  const m = markets.find((market: any) => market.conditionId === conditionId);
+
+  if (!m) {
+    console.log(`Market ${conditionId} not found in active markets`);
+    return null;
+  }
+
+  if (!m.enableOrderBook) {
+    console.log(`Market ${conditionId} does not have order book enabled`);
+    return null;
+  }
+
+  const clobTokenIds = m.clobTokenIds ? JSON.parse(m.clobTokenIds) : [];
+  if (clobTokenIds.length < 2) {
+    console.log(`Market ${conditionId} has no valid tokens`);
+    return null;
+  }
+
   return {
     id: m.id,
     question: m.question,
@@ -141,7 +214,7 @@ export async function getMarket(conditionId: string): Promise<GammaMarket | null
     outcomePrices: m.outcomePrices ? JSON.parse(m.outcomePrices) : ['0.5', '0.5'],
     volume: m.volume || '0',
     liquidity: m.liquidity || '0',
-    clobTokenIds: m.clobTokenIds ? JSON.parse(m.clobTokenIds) : [],
+    clobTokenIds: clobTokenIds,
     active: m.active,
     closed: m.closed,
   };
@@ -217,6 +290,60 @@ export async function getPolymarketBalance(encryptedPrivateKey: string): Promise
   };
 }
 
+// Ensure USDC.e is approved for Polymarket exchange contracts
+export async function ensurePolymarketApprovals(encryptedPrivateKey: string): Promise<{
+  success: boolean;
+  txHash?: string;
+  error?: string;
+}> {
+  try {
+    const privateKey = decryptPrivateKey(encryptedPrivateKey);
+    const provider = new ethers.providers.JsonRpcProvider(config.polygonRpcUrl);
+    const wallet = new ethers.Wallet(privateKey, provider);
+
+    // USDC.e contract
+    const usdcBridged = new ethers.Contract(USDC_BRIDGED, ERC20_ABI, wallet);
+
+    // Check current allowance for CTF Exchange
+    const currentAllowance = await usdcBridged.allowance(wallet.address, POLYMARKET_CTF_EXCHANGE);
+    const maxUint256 = ethers.constants.MaxUint256;
+
+    // If allowance is already max, we're good
+    if (currentAllowance.eq(maxUint256)) {
+      console.log('USDC.e already approved for Polymarket exchange');
+      return { success: true };
+    }
+
+    console.log('Approving USDC.e for Polymarket CTF Exchange...');
+
+    // Get proper gas settings for Polygon
+    const gasSettings = await getPolygonGasSettings(provider);
+
+    // Approve max amount for CTF Exchange
+    const approveTx = await usdcBridged.approve(
+      POLYMARKET_CTF_EXCHANGE,
+      maxUint256,
+      { ...gasSettings }
+    );
+
+    console.log(`Approval tx submitted: ${approveTx.hash}`);
+    const receipt = await approveTx.wait();
+    console.log('Approval confirmed');
+
+    return {
+      success: true,
+      txHash: receipt.transactionHash,
+    };
+  } catch (error) {
+    console.error('Approval error:', error);
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    if (errorMsg.includes('insufficient funds')) {
+      return { success: false, error: 'Insufficient POL for gas fees' };
+    }
+    return { success: false, error: errorMsg };
+  }
+}
+
 // Get user's positions (open orders and trades)
 export async function getPolymarketPositions(encryptedPrivateKey: string): Promise<{
   openOrders: Array<{
@@ -252,10 +379,29 @@ export async function placePolymarketOrder(
 ): Promise<{
   success: boolean;
   orderId?: string;
+  approvalTxHash?: string;
   error?: string;
 }> {
   try {
+    console.log(`Placing Polymarket order: ${side} ${amount} for token ${tokenId}`);
+
+    // Ensure USDC.e is approved for Polymarket before buying
+    if (side === 'BUY') {
+      console.log('Checking USDC.e approval for Polymarket...');
+      const approvalResult = await ensurePolymarketApprovals(encryptedPrivateKey);
+      if (!approvalResult.success) {
+        return {
+          success: false,
+          error: `Approval failed: ${approvalResult.error}`,
+        };
+      }
+      if (approvalResult.txHash) {
+        console.log(`USDC.e approved in tx: ${approvalResult.txHash}`);
+      }
+    }
+
     const client = await getClobClient(encryptedPrivateKey);
+    console.log('Got CLOB client, creating market order...');
 
     const result = await client.createAndPostMarketOrder(
       {
@@ -266,6 +412,8 @@ export async function placePolymarketOrder(
       undefined,
       OrderType.FOK // Fill or Kill for market-like behavior
     );
+
+    console.log('Order result:', JSON.stringify(result, null, 2));
 
     if (result.success) {
       return {
@@ -278,10 +426,21 @@ export async function placePolymarketOrder(
         error: result.errorMsg || 'Order not filled',
       };
     }
-  } catch (error) {
+  } catch (error: any) {
+    console.error('Polymarket order error:', error);
+
+    // Check for specific error types
+    const errorMsg = error?.message || 'Unknown error';
+    if (errorMsg.includes('market not found') || errorMsg.includes('toString')) {
+      return {
+        success: false,
+        error: 'Market not tradeable on CLOB. It may be closed or not active. Try a different market.',
+      };
+    }
+
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
+      error: errorMsg,
     };
   }
 }

@@ -59,9 +59,9 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# Start the bot with unbuffered output
+# Start the bot (without stdbuf - causes issues in WSL)
 echo "Starting bot from $PROJECT_DIR..."
-nohup stdbuf -oL -eL node dist/bot.js > /tmp/tg_bot.log 2>&1 &
+nohup node dist/bot.js > /tmp/tg_bot.log 2>&1 &
 BOT_PID=$!
 
 # Wait a moment and verify it started

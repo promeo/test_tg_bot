@@ -309,14 +309,13 @@ bot.onText(/\/pm_markets(?:\s+(.+))?/, async (msg, match) => {
       return `${i + 1}. ${m.question}\n` +
         `   YES: ${yesPrice.toFixed(0)}% | NO: ${noPrice.toFixed(0)}%\n` +
         `   Vol: $${volume.toFixed(1)}M\n` +
-        `   ID: \`${m.conditionId.slice(0, 16)}...\``;
+        `   ID: ${m.conditionId}`;
     }).join('\n\n');
 
     bot.sendMessage(
       chatId,
-      `*Polymarket ${query ? 'Search Results' : 'Trending'}*\n\n${marketText}\n\n` +
-      `Use /pm_buy <id> YES|NO <amount> to trade`,
-      { parse_mode: 'Markdown' }
+      `Polymarket ${query ? 'Search Results' : 'Trending'}\n\n${marketText}\n\n` +
+      `Use /pm_buy <id> YES|NO <amount> to trade`
     );
   } catch (error) {
     bot.sendMessage(chatId, `Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -344,23 +343,20 @@ bot.onText(/\/pm_balance/, async (msg) => {
     const usdcNative = parseFloat(balances.usdcNative) || 0;
     const usdcBridged = parseFloat(balances.usdcBridged) || 0;
 
-    let message = `*Polygon Wallet Balances*\n\n` +
+    let message = `Polygon Wallet Balances\n\n` +
       `POL (gas): ${pol.toFixed(4)}\n` +
       `USDC.e: $${usdcBridged.toFixed(2)} (Polymarket)\n` +
       `USDC (native): $${usdcNative.toFixed(2)}\n\n`;
 
     // Show warning if they have native USDC but no USDC.e
     if (usdcNative > 0 && usdcBridged === 0) {
-      message += `⚠️ *Action Required:*\n` +
-        `Polymarket uses USDC.e (bridged), not native USDC.\n` +
-        `Swap your USDC to USDC.e on:\n` +
-        `• QuickSwap: quickswap.exchange\n` +
-        `• 1inch: app.1inch.io\n\n`;
+      message += `Note: Polymarket uses USDC.e (bridged), not native USDC.\n` +
+        `Use /pm_swap <amount> to swap your USDC to USDC.e\n\n`;
     }
 
-    message += `Your address:\n\`${balances.address}\``;
+    message += `Your address:\n${balances.address}`;
 
-    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, message);
   } catch (error) {
     bot.sendMessage(chatId, `Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
@@ -472,16 +468,30 @@ bot.onText(/\/pm_positions/, async (msg) => {
         `  Market: ${o.market.slice(0, 16)}...`;
     }).join('\n\n');
 
-    bot.sendMessage(chatId, `*Open Polymarket Orders:*\n\n${ordersText}`, { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, `Open Polymarket Orders:\n\n${ordersText}`);
   } catch (error) {
     bot.sendMessage(chatId, `Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
+});
+
+// /pm_buy fallback - show usage when format is wrong
+bot.onText(/\/pm_buy(?!\s+\S+\s+(YES|NO|yes|no)\s+[\d.]+)/, async (msg) => {
+  const chatId = msg.chat.id;
+  console.log('pm_buy fallback triggered, message:', msg.text);
+  bot.sendMessage(
+    chatId,
+    `Usage: /pm_buy <market_id> YES|NO <amount>\n\n` +
+    `Example: /pm_buy 0x1234567890abcdef YES 5\n\n` +
+    `Get market IDs from /pm_markets`
+  );
 });
 
 // /pm_buy command - Buy YES/NO shares on Polymarket
 bot.onText(/\/pm_buy\s+(\S+)\s+(YES|NO|yes|no)\s+([\d.]+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const telegramId = msg.from?.id;
+
+  console.log('pm_buy command received:', msg.text, match);
 
   if (!telegramId || !match) return;
 
@@ -495,6 +505,8 @@ bot.onText(/\/pm_buy\s+(\S+)\s+(YES|NO|yes|no)\s+([\d.]+)/, async (msg, match) =
   const outcome = match[2].toUpperCase();
   const amount = parseFloat(match[3]);
 
+  console.log(`pm_buy: conditionId=${conditionId}, outcome=${outcome}, amount=${amount}`);
+
   if (isNaN(amount) || amount <= 0) {
     bot.sendMessage(chatId, 'Invalid amount. Usage: /pm_buy <market_id> YES 10');
     return;
@@ -504,7 +516,10 @@ bot.onText(/\/pm_buy\s+(\S+)\s+(YES|NO|yes|no)\s+([\d.]+)/, async (msg, match) =
     bot.sendMessage(chatId, `Looking up market...`);
 
     // Get market to find token ID
+    console.log(`Looking up market with conditionId: ${conditionId}`);
     const market = await getMarket(conditionId);
+    console.log(`Market result:`, market ? `found: ${market.question}` : 'not found');
+
     if (!market) {
       bot.sendMessage(chatId, 'Market not found. Use /pm_markets to find valid market IDs.');
       return;
@@ -512,6 +527,7 @@ bot.onText(/\/pm_buy\s+(\S+)\s+(YES|NO|yes|no)\s+([\d.]+)/, async (msg, match) =
 
     const tokenIndex = outcome === 'YES' ? 0 : 1;
     const tokenId = market.clobTokenIds[tokenIndex];
+    console.log(`Token ID for ${outcome}: ${tokenId}`);
 
     if (!tokenId) {
       bot.sendMessage(chatId, 'Token ID not found for this market.');
@@ -528,6 +544,7 @@ bot.onText(/\/pm_buy\s+(\S+)\s+(YES|NO|yes|no)\s+([\d.]+)/, async (msg, match) =
       bot.sendMessage(chatId, `Order failed: ${result.error}`);
     }
   } catch (error) {
+    console.error('pm_buy error:', error);
     bot.sendMessage(chatId, `Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 });
