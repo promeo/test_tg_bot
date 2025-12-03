@@ -467,7 +467,8 @@ bot.onText(/\/pm_positions/, async (msg) => {
         const pnlPctSign = p.percentPnl >= 0 ? '+' : '';
         message += `${p.title.slice(0, 40)}${p.title.length > 40 ? '...' : ''}\n` +
           `  ${p.outcome}: ${p.size.toFixed(2)} shares @ $${p.avgPrice.toFixed(3)}\n` +
-          `  Value: $${p.currentValue.toFixed(2)} | PnL: ${pnlSign}$${p.cashPnl.toFixed(2)} (${pnlPctSign}${p.percentPnl.toFixed(1)}%)\n\n`;
+          `  Value: $${p.currentValue.toFixed(2)} | PnL: ${pnlSign}$${p.cashPnl.toFixed(2)} (${pnlPctSign}${p.percentPnl.toFixed(1)}%)\n` +
+          `  Sell: \`/pm_sell ${p.conditionId} ${p.outcome} ${p.size.toFixed(2)}\`\n\n`;
       }
     }
 
