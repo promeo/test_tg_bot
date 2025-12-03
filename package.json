@@ -1,0 +1,16 @@
+{
+  "name": "test_tg_bot",
+  "version": "1.0.0",
+  "description": "Basic Telegram bot for testing with ngrok",
+  "main": "src/bot.js",
+  "scripts": {
+    "start": "node src/bot.js",
+    "dev": "node --watch src/bot.js"
+  },
+  "keywords": ["telegram", "bot"],
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^16.3.1",
+    "node-telegram-bot-api": "^0.64.0"
+  }
+}
