@@ -582,10 +582,12 @@ bot.onText(/\/pm_buy\s+(\S+)\s+(YES|NO|yes|no)\s+([\d.]+)/, async (msg, match) =
   }
 });
 
-// /pm_sell command - Sell YES/NO shares on Polymarket
-bot.onText(/\/pm_sell\s+(\S+)\s+(YES|NO|yes|no)\s+([\d.]+)/, async (msg, match) => {
+// /pm_sell command - Sell shares on Polymarket (supports YES/NO, Over/Under, etc.)
+bot.onText(/\/pm_sell\s+(\S+)\s+(\S+)\s+([\d.]+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const telegramId = msg.from?.id;
+
+  console.log('pm_sell command received:', msg.text, match);
 
   if (!telegramId || !match) return;
 
@@ -596,7 +598,7 @@ bot.onText(/\/pm_sell\s+(\S+)\s+(YES|NO|yes|no)\s+([\d.]+)/, async (msg, match) 
   }
 
   const conditionId = match[1];
-  const outcome = match[2].toUpperCase();
+  const outcome = match[2]; // Keep original case for display
   const shares = parseFloat(match[3]);
 
   if (isNaN(shares) || shares <= 0) {
@@ -613,7 +615,14 @@ bot.onText(/\/pm_sell\s+(\S+)\s+(YES|NO|yes|no)\s+([\d.]+)/, async (msg, match) 
       return;
     }
 
-    const tokenIndex = outcome === 'YES' ? 0 : 1;
+    // Find the token index for this outcome (case-insensitive)
+    const tokenIndex = market.outcomes.findIndex(
+      (o: string) => o.toLowerCase() === outcome.toLowerCase()
+    );
+    if (tokenIndex === -1) {
+      bot.sendMessage(chatId, `Outcome "${outcome}" not found. Valid outcomes: ${market.outcomes.join(', ')}`);
+      return;
+    }
     const tokenId = market.clobTokenIds[tokenIndex];
 
     if (!tokenId) {
@@ -645,6 +654,20 @@ bot.onText(/\/pm_sell\s+(\S+)\s+(YES|NO|yes|no)\s+([\d.]+)/, async (msg, match) 
     }
   } catch (error) {
     bot.sendMessage(chatId, `Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+});
+
+// Fallback for pm_sell with bad format
+bot.onText(/\/pm_sell(?:\s|$)/, (msg) => {
+  const text = msg.text || '';
+  // Only respond if main handler didn't match
+  if (!/\/pm_sell\s+\S+\s+\S+\s+[\d.]+/.test(text)) {
+    console.log('pm_sell fallback triggered:', text);
+    bot.sendMessage(msg.chat.id,
+      'Usage: /pm_sell <market_id> <outcome> <shares>\n' +
+      'Example: /pm_sell 0x123abc... YES 1.67\n' +
+      'Example: /pm_sell 0x456def... Over 2.00'
+    );
   }
 });
 
