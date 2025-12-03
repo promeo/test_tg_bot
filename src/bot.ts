@@ -607,30 +607,27 @@ bot.onText(/\/pm_sell\s+(\S+)\s+(\S+)\s+([\d.]+)/, async (msg, match) => {
   }
 
   try {
-    bot.sendMessage(chatId, `Looking up market...`);
+    bot.sendMessage(chatId, `Looking up position...`);
 
-    const market = await getMarket(conditionId);
-    if (!market) {
-      bot.sendMessage(chatId, 'Market not found. Use /pm_markets to find valid market IDs.');
-      return;
-    }
-
-    // Find the token index for this outcome (case-insensitive)
-    const tokenIndex = market.outcomes.findIndex(
-      (o: string) => o.toLowerCase() === outcome.toLowerCase()
+    // Look up position directly instead of market (handles markets not in top trending)
+    const { positions } = await getPolymarketPositions(user.encryptedPrivateKey);
+    const position = positions.find(
+      p => p.conditionId === conditionId &&
+           p.outcome.toLowerCase() === outcome.toLowerCase()
     );
-    if (tokenIndex === -1) {
-      bot.sendMessage(chatId, `Outcome "${outcome}" not found. Valid outcomes: ${market.outcomes.join(', ')}`);
+
+    if (!position) {
+      bot.sendMessage(chatId, 'Position not found. Use /pm_positions to see your positions.');
       return;
     }
-    const tokenId = market.clobTokenIds[tokenIndex];
 
+    const tokenId = position.asset;
     if (!tokenId) {
-      bot.sendMessage(chatId, 'Token ID not found for this market.');
+      bot.sendMessage(chatId, 'Token ID not found for this position. Try again or contact support.');
       return;
     }
 
-    bot.sendMessage(chatId, `Placing SELL order for ${shares} ${outcome} shares on:\n"${market.question}"...`);
+    bot.sendMessage(chatId, `Placing SELL order for ${shares} ${outcome} shares on:\n"${position.title}"...`);
 
     const result = await placePolymarketOrder(user.encryptedPrivateKey, tokenId, 'SELL', shares);
 

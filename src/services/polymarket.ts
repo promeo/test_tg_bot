@@ -21,6 +21,13 @@ const ERC20_ABI = [
   'function allowance(address owner, address spender) view returns (uint256)',
 ];
 
+// ERC1155 ABI for CTF tokens (outcome tokens)
+const ERC1155_ABI = [
+  'function setApprovalForAll(address operator, bool approved)',
+  'function isApprovedForAll(address account, address operator) view returns (bool)',
+  'function balanceOf(address account, uint256 id) view returns (uint256)',
+];
+
 // Get current gas prices for Polygon (with minimum 30 gwei tip)
 async function getPolygonGasSettings(provider: ethers.providers.Provider): Promise<{
   maxFeePerGas: ethers.BigNumber;
@@ -344,6 +351,58 @@ export async function ensurePolymarketApprovals(encryptedPrivateKey: string): Pr
   }
 }
 
+// Ensure CTF (Conditional Token Framework) is approved for selling outcome tokens
+export async function ensureCTFApproval(encryptedPrivateKey: string): Promise<{
+  success: boolean;
+  txHash?: string;
+  error?: string;
+}> {
+  try {
+    const privateKey = decryptPrivateKey(encryptedPrivateKey);
+    const provider = new ethers.providers.JsonRpcProvider(config.polygonRpcUrl);
+    const wallet = new ethers.Wallet(privateKey, provider);
+
+    // CTF contract (ERC1155)
+    const ctf = new ethers.Contract(POLYMARKET_CTF, ERC1155_ABI, wallet);
+
+    // Check if already approved for CTF Exchange
+    const isApproved = await ctf.isApprovedForAll(wallet.address, POLYMARKET_CTF_EXCHANGE);
+
+    if (isApproved) {
+      console.log('CTF already approved for Polymarket exchange');
+      return { success: true };
+    }
+
+    console.log('Approving CTF for Polymarket CTF Exchange...');
+
+    // Get proper gas settings for Polygon
+    const gasSettings = await getPolygonGasSettings(provider);
+
+    // Approve CTF Exchange to transfer outcome tokens
+    const approveTx = await ctf.setApprovalForAll(
+      POLYMARKET_CTF_EXCHANGE,
+      true,
+      { ...gasSettings }
+    );
+
+    console.log(`CTF approval tx submitted: ${approveTx.hash}`);
+    const receipt = await approveTx.wait();
+    console.log('CTF approval confirmed');
+
+    return {
+      success: true,
+      txHash: receipt.transactionHash,
+    };
+  } catch (error) {
+    console.error('CTF Approval error:', error);
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    if (errorMsg.includes('insufficient funds')) {
+      return { success: false, error: 'Insufficient POL for gas fees' };
+    }
+    return { success: false, error: errorMsg };
+  }
+}
+
 // Position data from Polymarket Data API
 export interface PolymarketPosition {
   conditionId: string;
@@ -354,6 +413,7 @@ export interface PolymarketPosition {
   currentValue: number; // Current value in USDC
   cashPnl: number; // Profit/Loss in USDC
   percentPnl: number; // Profit/Loss percentage
+  asset: string; // Token ID - needed for selling
 }
 
 // Get user's positions from Polymarket Data API
@@ -388,6 +448,7 @@ export async function getPolymarketPositions(encryptedPrivateKey: string): Promi
       currentValue: p.currentValue || 0,
       cashPnl: p.cashPnl || 0,
       percentPnl: p.percentPnl || 0,
+      asset: p.asset || '', // Token ID for selling
     }));
   }
 
@@ -429,7 +490,7 @@ export async function placePolymarketOrder(
   try {
     console.log(`Placing FOK Polymarket order: ${side} ${amount} for token ${tokenId}`);
 
-    // Ensure USDC.e is approved for Polymarket before buying
+    // Ensure approvals before trading
     if (side === 'BUY') {
       console.log('Checking USDC.e approval for Polymarket...');
       const approvalResult = await ensurePolymarketApprovals(encryptedPrivateKey);
@@ -441,6 +502,19 @@ export async function placePolymarketOrder(
       }
       if (approvalResult.txHash) {
         console.log(`USDC.e approved in tx: ${approvalResult.txHash}`);
+      }
+    } else {
+      // For SELL, ensure CTF approval to transfer outcome tokens
+      console.log('Checking CTF approval for Polymarket...');
+      const ctfApprovalResult = await ensureCTFApproval(encryptedPrivateKey);
+      if (!ctfApprovalResult.success) {
+        return {
+          success: false,
+          error: `CTF Approval failed: ${ctfApprovalResult.error}`,
+        };
+      }
+      if (ctfApprovalResult.txHash) {
+        console.log(`CTF approved in tx: ${ctfApprovalResult.txHash}`);
       }
     }
 
